@@ -10,14 +10,15 @@
  * file that was distributed with this source code. For the full list of
  * contributors, visit https://github.com/PHPOffice/PHPWord/contributors.
  *
- * @link        https://github.com/PHPOffice/PHPWord
- * @copyright   2010-2016 PHPWord contributors
+ * @see         https://github.com/PHPOffice/PHPWord
+ * @copyright   2010-2017 PHPWord contributors
  * @license     http://www.gnu.org/licenses/lgpl.txt LGPL version 3
  */
 
 namespace PhpOffice\PhpWord\Shared;
 
 use PhpOffice\PhpWord\Element\AbstractContainer;
+use PhpOffice\PhpWord\SimpleType\Jc;
 
 /**
  * Common Html functions
@@ -34,7 +35,6 @@ class Html
      * @param \PhpOffice\PhpWord\Element\AbstractContainer $element Where the parts need to be added
      * @param string $html The code to parse
      * @param bool $fullHTML If it's a full HTML, no need to add 'body' tag
-     * @return void
      */
     public static function addHtml($element, $html, $fullHTML = false)
     {
@@ -95,7 +95,6 @@ class Html
      * @param \PhpOffice\PhpWord\Element\AbstractContainer $element object to add an element corresponding with the node
      * @param array $styles Array with all styles
      * @param array $data Array to transport data to a next level in the DOM tree, for example level of listitems
-     * @return void
      */
     protected static function parseNode($node, $element, $styles = array(), $data = array())
     {
@@ -119,9 +118,13 @@ class Html
             'h6'        => array('Heading',     null,   $element,   $styles,    null,   'Heading6',     null),
             '#text'     => array('Text',        $node,  $element,   $styles,    null,   null,           null),
             'strong'    => array('Property',    null,   null,       $styles,    null,   'bold',         true),
+            'b'         => array('Property',    null,   null,       $styles,    null,   'bold',         true),
             'em'        => array('Property',    null,   null,       $styles,    null,   'italic',       true),
+            'i'         => array('Property',    null,   null,       $styles,    null,   'italic',       true),
+            'u'         => array('Property',    null,   null,       $styles,    null,   'underline',    'single'),
             'sup'       => array('Property',    null,   null,       $styles,    null,   'superScript',  true),
             'sub'       => array('Property',    null,   null,       $styles,    null,   'subScript',    true),
+            'span'      => array('Property',    null,   null,       $styles,    null,   'span',         $node),
             'table'     => array('Table',       $node,  $element,   $styles,    null,   'addTable',     true),
             'tr'        => array('Table',       $node,  $element,   $styles,    null,   'addRow',       true),
             'td'        => array('Table',       $node,  $element,   $styles,    null,   'addCell',      true),
@@ -169,7 +172,6 @@ class Html
      * @param \PhpOffice\PhpWord\Element\AbstractContainer $element
      * @param array $styles
      * @param array $data
-     * @return void
      */
     private static function parseChildNodes($node, $element, $styles, $data)
     {
@@ -226,19 +228,14 @@ class Html
      * @param \DOMNode $node
      * @param \PhpOffice\PhpWord\Element\AbstractContainer $element
      * @param array &$styles
-     * @return null
      */
     private static function parseText($node, $element, &$styles)
     {
         $styles['font'] = self::parseInlineStyle($node, $styles['font']);
 
-        // Commented as source of bug #257. `method_exists` doesn't seems to work properly in this case.
-        // @todo Find better error checking for this one
-        // if (method_exists($element, 'addText')) {
+        if (is_callable(array($element, 'addText'))) {
             $element->addText($node->nodeValue, $styles['font'], $styles['paragraph']);
-        // }
-
-        return null;
+        }
     }
 
     /**
@@ -247,13 +244,19 @@ class Html
      * @param array &$styles
      * @param string $argument1 Style name
      * @param string $argument2 Style value
-     * @return null
      */
     private static function parseProperty(&$styles, $argument1, $argument2)
     {
-        $styles['font'][$argument1] = $argument2;
-
-        return null;
+        if ($argument1 !== 'span') {
+            $styles['font'][$argument1] = $argument2;
+        } else {
+            if (!is_null($argument2->attributes)) {
+                $nodeAttr = $argument2->attributes->getNamedItem('style');
+                if (!is_null($nodeAttr) && property_exists($nodeAttr, 'value')) {
+                    $styles['font'] = self::parseStyle($nodeAttr, $styles['font']);
+                }
+            }
+        }
     }
 
     /**
@@ -275,14 +278,14 @@ class Html
 
         // $attributes = $node->attributes;
         // if ($attributes->getNamedItem('width') !== null) {
-            // $newElement->setWidth($attributes->getNamedItem('width')->value);
+        // $newElement->setWidth($attributes->getNamedItem('width')->value);
         // }
 
         // if ($attributes->getNamedItem('height') !== null) {
-            // $newElement->setHeight($attributes->getNamedItem('height')->value);
+        // $newElement->setHeight($attributes->getNamedItem('height')->value);
         // }
         // if ($attributes->getNamedItem('width') !== null) {
-            // $newElement=$element->addCell($width=$attributes->getNamedItem('width')->value);
+        // $newElement=$element->addCell($width=$attributes->getNamedItem('width')->value);
         // }
 
         return $newElement;
@@ -294,7 +297,6 @@ class Html
      * @param array &$styles
      * @param array &$data
      * @param string $argument1 List type
-     * @return null
      */
     private static function parseList(&$styles, &$data, $argument1)
     {
@@ -304,8 +306,6 @@ class Html
             $data['listdepth'] = 0;
         }
         $styles['list']['listType'] = $argument1;
-
-        return null;
     }
 
     /**
@@ -315,7 +315,6 @@ class Html
      * @param \PhpOffice\PhpWord\Element\AbstractContainer $element
      * @param array &$styles
      * @param array $data
-     * @return null
      *
      * @todo This function is almost the same like `parseChildNodes`. Merged?
      * @todo As soon as ListItem inherits from AbstractContainer or TextRun delete parsing part of childNodes
@@ -332,8 +331,6 @@ class Html
             }
             $element->addListItem($text, $data['listdepth'], $styles['font'], $styles['list'], $styles['paragraph']);
         }
-
-        return null;
     }
 
     /**
@@ -361,13 +358,47 @@ class Html
                     }
                     break;
                 case 'text-align':
-                    $styles['alignment'] = $cValue; // todo: any mapping?
+                    switch ($cValue) {
+                        case 'left':
+                            $styles['alignment'] = Jc::START;
+                            break;
+                        case 'right':
+                            $styles['alignment'] = Jc::END;
+                            break;
+                        case 'center':
+                            $styles['alignment'] = Jc::CENTER;
+                            break;
+                        case 'justify':
+                            $styles['alignment'] = Jc::BOTH;
+                            break;
+                    }
+                    break;
+                case 'font-size':
+                    $styles['size'] = Converter::cssToPoint($cValue);
+                    break;
+                case 'font-family':
+                    $cValue = array_map('trim', explode(',', $cValue));
+                    $styles['name'] = ucwords($cValue[0]);
                     break;
                 case 'color':
-                    $styles['color'] = trim($cValue, "#");
+                    $styles['color'] = trim($cValue, '#');
                     break;
                 case 'background-color':
-                    $styles['bgColor'] = trim($cValue, "#");
+                    $styles['bgColor'] = trim($cValue, '#');
+                    break;
+                case 'font-weight':
+                    $tValue = false;
+                    if (preg_match('#bold#', $cValue)) {
+                        $tValue = true; // also match bolder
+                    }
+                    $styles['bold'] = $tValue;
+                    break;
+                case 'font-style':
+                    $tValue = false;
+                    if (preg_match('#(?:italic|oblique)#', $cValue)) {
+                        $tValue = true;
+                    }
+                    $styles['italic'] = $tValue;
                     break;
             }
         }

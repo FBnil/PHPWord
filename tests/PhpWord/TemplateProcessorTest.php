@@ -10,8 +10,8 @@
  * file that was distributed with this source code. For the full list of
  * contributors, visit https://github.com/PHPOffice/PHPWord/contributors.
  *
- * @link        https://github.com/PHPOffice/PHPWord
- * @copyright   2010-2016 PHPWord contributors
+ * @see         https://github.com/PHPOffice/PHPWord
+ * @copyright   2010-2017 PHPWord contributors
  * @license     http://www.gnu.org/licenses/lgpl.txt LGPL version 3
  */
 
@@ -24,10 +24,61 @@ namespace PhpOffice\PhpWord;
  */
 final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
 {
+    // http://php.net/manual/en/class.reflectionobject.php
+    public function poke(&$object, $property, $newValue = null)
+    {
+        $refObject = new \ReflectionObject($object);
+        $refProperty = $refObject->getProperty($property);
+        $refProperty->setAccessible(true);
+        if ($newValue !== null) {
+            $refProperty->setValue($object, $newValue);
+        }
+        return $refProperty;
+    }
+
+    public function peek(&$object, $property)
+    {
+        $refObject = new \ReflectionObject($object);
+        $refProperty = $refObject->getProperty($property);
+        $refProperty->setAccessible(true);
+        return $refProperty->getValue($object);
+    }
+
+    /**
+     * Helper function to call protected method
+     *
+     * @param mixed $object
+     * @param string $method
+     * @param array $args
+     */
+    public static function callProtectedMethod($object, $method, array $args = array())
+    {
+        $class = new \ReflectionClass(get_class($object));
+        $method = $class->getMethod($method);
+        $method->setAccessible(true);
+        return $method->invokeArgs($object, $args);
+    }
+
+    /**
+     * Construct test
+     *
+     * @covers ::__construct
+
+     * @test
+     */
+    public function testTheConstruct()
+    {
+        $object = new TemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
+
+        $this->assertInstanceOf('PhpOffice\\PhpWord\\TemplateProcessor', $object);
+        $this->assertEquals(array(), $object->getVariables());
+    }
+
     /**
      * Template can be saved in temporary location.
      *
      * @covers ::save
+     * @covers ::zipAddFromString
      * @test
      */
     final public function testTemplateCanBeSavedInTemporaryLocation()
@@ -41,6 +92,8 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
             $templateProcessor->applyXslStyleSheet($xslDomDocument, array('needle' => $needle));
         }
 
+        $embeddingText = "The quick Brown Fox jumped over the lazy^H^H^H^Htired unitTester";
+        $templateProcessor->zipAddFromString('word/embeddings/fox.bin', $embeddingText);
         $documentFqfn = $templateProcessor->save();
 
         $this->assertNotEmpty($documentFqfn, 'FQFN of the saved document is empty.');
@@ -51,6 +104,7 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
         $templateHeaderXml = $templateZip->getFromName('word/header1.xml');
         $templateMainPartXml = $templateZip->getFromName('word/document.xml');
         $templateFooterXml = $templateZip->getFromName('word/footer1.xml');
+        $templateFooterXml = $templateZip->getFromName('word/footer1.xml');
         if (false === $templateZip->close()) {
             throw new \Exception("Could not close zip file \"{$templateZip}\".");
         }
@@ -60,6 +114,7 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
         $documentHeaderXml = $documentZip->getFromName('word/header1.xml');
         $documentMainPartXml = $documentZip->getFromName('word/document.xml');
         $documentFooterXml = $documentZip->getFromName('word/footer1.xml');
+        $documentEmbedding = $documentZip->getFromName('word/embeddings/fox.bin');
         if (false === $documentZip->close()) {
             throw new \Exception("Could not close zip file \"{$documentZip}\".");
         }
@@ -67,6 +122,8 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
         $this->assertNotEquals($templateHeaderXml, $documentHeaderXml);
         $this->assertNotEquals($templateMainPartXml, $documentMainPartXml);
         $this->assertNotEquals($templateFooterXml, $documentFooterXml);
+
+        $this->assertEquals($embeddingText, $documentEmbedding);
 
         return $documentFqfn;
     }
@@ -104,9 +161,9 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
             throw new \Exception("Could not close zip file \"{$expectedDocumentFqfn}\".");
         }
 
-        $this->assertXmlStringEqualsXmlString($expectedHeaderXml, $actualHeaderXml);
-        $this->assertXmlStringEqualsXmlString($expectedMainPartXml, $actualMainPartXml);
-        $this->assertXmlStringEqualsXmlString($expectedFooterXml, $actualFooterXml);
+        $this->assertxmlStringEqualsxmlString($expectedHeaderXml, $actualHeaderXml);
+        $this->assertxmlStringEqualsxmlString($expectedMainPartXml, $actualMainPartXml);
+        $this->assertxmlStringEqualsxmlString($expectedFooterXml, $actualFooterXml);
     }
 
     /**
@@ -156,11 +213,12 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
     /**
      * @covers ::setValue
      * @covers ::cloneRow
+     * @covers ::deleteRow
      * @covers ::saveAs
      * @covers ::findTagLeft
      * @covers ::findTagRight
-     * @covers ::findBlockEnd
-     * @covers ::findBlockStart
+     * @expectedException        \PhpOffice\PhpWord\Exception\Exception
+     * @expectedExceptionMessage Can not find macro
      * @test
      */
     public function testCloneRow()
@@ -174,19 +232,28 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
 
         $docName = 'clone-test-result.docx';
         $templateProcessor->setValue('tableHeader', utf8_decode('ééé'));
-        $templateProcessor->cloneRow('userId', 1);
+        $templateProcessor->cloneRow('userId', 2, true, true);
         $templateProcessor->setValue('userId#1', 'Test');
+        $this->assertTrue(
+            $templateProcessor->deleteRow('userId#2')
+        );
+        $this->assertFalse(
+            $templateProcessor->deleteRow('userId#3')
+        );
         $templateProcessor->saveAs($docName);
         $docFound = file_exists($docName);
         unlink($docName);
         $this->assertTrue($docFound);
+        $this->assertEquals(
+            null,
+            $templateProcessor->cloneRow('userId', 2, false, true)
+        );
     }
 
     /**
      * @covers ::getRow
+     * @covers ::replaceRow
      * @covers ::saveAs
-     * @covers ::findRowStart
-     * @covers ::findRowEnd
      * @covers ::findTagLeft
      * @covers ::findTagRight
      * @test
@@ -195,10 +262,15 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
     {
         $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/clone-merge.docx');
         $initialArray = array('tableHeader', 'userId', 'userName', 'userLocation');
+        $midArray = array(
+            'tableHeader',
+            'userId', 'userName', 'foo', 'userLocation'
+        );
         $finalArray = array(
             'tableHeader',
-            'userId#1', 'userName#1', 'userLocation#1',
-            'userId#2', 'userName#2', 'userLocation#2'
+            'userId#1', 'userName#1', 'foo#1',
+            'userId#2', 'userName#2', 'foo#2',
+            'userId', 'userName', 'userLocation'
         );
         $row = $templateProcessor->getRow('userId');
         $this->assertNotEmpty($row);
@@ -206,10 +278,18 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
             $initialArray,
             $templateProcessor->getVariables()
         );
-        $row = $templateProcessor->cloneRow('userId', 2);
         $this->assertStringStartsWith('<w:tr', $row);
         $this->assertStringEndsWith('</w:tr>', $row);
-        $this->assertNotEmpty($row);
+
+        $result = $templateProcessor->cloneRow('userId', 2, false, false);
+        $this->assertTrue($result);
+        $templateProcessor->setValue('userLocation', '${foo}', 1);
+        $this->assertEquals(
+            $midArray,
+            array_values($templateProcessor->getVariables()),
+            implode("|", $templateProcessor->getVariables())
+        );
+        $row = $templateProcessor->cloneRow('userId', 2, true, false);
         $this->assertEquals(
             $finalArray,
             $templateProcessor->getVariables()
@@ -220,10 +300,23 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
         $docFound = file_exists($docName);
         $this->assertTrue($docFound);
         if ($docFound) {
-            $templateProcessorNEWFILE = $this->getOpenTemplateProcessor($docName);
+            $templateProcessorNewFile = new TemplateProcessor($docName);
             $this->assertEquals(
                 $finalArray,
-                $templateProcessorNEWFILE->getVariables()
+                $templateProcessorNewFile->getVariables()
+            );
+            $row = $templateProcessorNewFile->getRow('userId');
+            $this->assertTrue(strlen($row)>10);
+            $this->assertTrue(
+                $templateProcessorNewFile->replaceRow('userId#1', $row)
+            );
+            $this->assertTrue(
+                $templateProcessorNewFile->replaceRow('userId#2', $row)
+            );
+            // now we have less macro variables (although multiple of them)
+            $this->assertEquals(
+                $initialArray,
+                $templateProcessorNewFile->getVariables()
             );
             unlink($docName);
         }
@@ -252,32 +345,10 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
     }
 
     /**
-     * Convoluted way to get a helper class, without using include_once (not allowed by phpcs)
-     * or inline (not allowed by phpcs) or touching the autoload.php (and make it accessible to users)
-     * this helper class returns a TemplateProcessor that allows access to private variables
-     * like tempDocumentMainPart, see the functions that use it for usage.
-     * eval is evil, but phpcs and phpunit made me do it!
-     */
-    private function getOpenTemplateProcessor($name)
-    {
-        if (!file_exists($name) || !is_readable($name)) {
-            return null;
-        }
-        $ESTR =
-            'class OpenTemplateProcessor extends \PhpOffice\PhpWord\TemplateProcessor {'
-            . 'public function __construct($instance){return parent::__construct($instance);}'
-            . 'public function __get($key){return $this->$key;}'
-            . 'public function __set($key, $val){return $this->$key = $val;} };'
-            . 'return new OpenTemplateProcessor("'.$name.'");';
-        return eval($ESTR);
-    }
-    /**
      * @covers ::cloneBlock
      * @covers ::deleteBlock
      * @covers ::getBlock
      * @covers ::saveAs
-     * @covers ::findBlockEnd
-     * @covers ::findBlockStart
      * @covers ::findTagLeft
      * @covers ::findTagRight
      * @test
@@ -290,29 +361,29 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
             array('DELETEME', '/DELETEME', 'CLONEME', '/CLONEME'),
             $templateProcessor->getVariables()
         );
-        $clone_times = 3;
+        $cloneTimes = 3;
         $docName = 'clone-delete-block-result.docx';
         $xmlblock = $templateProcessor->getBlock('CLONEME');
         $this->assertNotEmpty($xmlblock);
-        $templateProcessor->cloneBlock('CLONEME', $clone_times);
+        $templateProcessor->cloneBlock('CLONEME', $cloneTimes);
         $templateProcessor->deleteBlock('DELETEME');
         $templateProcessor->saveAs($docName);
         $docFound = file_exists($docName);
         if ($docFound) {
             # Great, so we saved the replaced document, so we open that new document
             # note that we need to access private variables, so we use a sub-class
-            $templateProcessorNEWFILE = $this->getOpenTemplateProcessor($docName);
+            $templateProcessorNewFile = new TemplateProcessor($docName);
             # We test that all Block variables have been replaced (thus, getVariables() is empty)
             $this->assertEquals(
-                [],
-                $templateProcessorNEWFILE->getVariables(),
+                array(),
+                $templateProcessorNewFile->getVariables(),
                 "All block variables should have been replaced"
             );
-            # we cloned block CLONEME $clone_times times, so let's count to $clone_times
+            # we cloned block CLONEME $cloneTimes times, so let's count to $cloneTimes
             $this->assertEquals(
-                $clone_times,
-                substr_count($templateProcessorNEWFILE->tempDocumentMainPart, $xmlblock),
-                "Block should be present $clone_times in the document"
+                $cloneTimes,
+                substr_count($this->peek($templateProcessorNewFile, 'tempDocumentMainPart'), $xmlblock),
+                "Block should be present $cloneTimes in the document"
             );
             unlink($docName); # delete generated file
         }
@@ -324,21 +395,23 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
      * @covers ::cloneBlock
      * @covers ::getVariables
      * @covers ::getBlock
+     * @covers ::findTagLeft
+     * @covers ::findTagRight
      * @covers ::setValue
      * @test
      */
     public function testCloneIndexedBlock()
     {
-        $templateProcessor = $this->getOpenTemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
         # we will fake a block with a variable inside it, as there is no template document yet.
-        $XMLTXT = '<w:p>This ${repeats} a few times</w:p>';
-        $XMLSTR = '<?xml><w:p>${MYBLOCK}</w:p>' . $XMLTXT . '<w:p>${/MYBLOCK}</w:p>';
-        $templateProcessor->tempDocumentMainPart = $XMLSTR;
+        $xmlTxt = '<w:p>This ${repeats} a few times</w:p>';
+        $xmlStr = '<?xml><w:p>${MYBLOCK}</w:p>' . $xmlTxt . '<w:p>${/MYBLOCK}</w:p>';
+        $this->poke($templateProcessor, 'tempDocumentMainPart', $xmlStr);
 
         $this->assertEquals(
-            $XMLTXT,
+            $xmlTxt,
             $templateProcessor->getBlock('MYBLOCK'),
-            "Block should be cut at the right place (using findBlockStart/findBlockEnd)"
+            "Block should be cut at the right place (using findTagLeft/findTagRight)"
         );
 
         # detects variables
@@ -356,33 +429,33 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
             "Injected document should contain the right cloned variables, in the right order"
         );
 
-        $ARR = [
+        $variablesArray = array(
             'repeats#1' => 'ONE',
             'repeats#2' => 'TWO',
             'repeats#3' => 'THREE',
             'repeats#4' => 'FOUR'
-        ];
-        $templateProcessor->setValue(array_keys($ARR), array_values($ARR));
+        );
+        $templateProcessor->setValue(array_keys($variablesArray), array_values($variablesArray));
         $this->assertEquals(
-            [],
+            array(),
             $templateProcessor->getVariables(),
             "Variables have been replaced and should not be present anymore"
         );
 
         # now we test the order of replacement: ONE,TWO,THREE then FOUR
-        $STR = "";
-        foreach ($ARR as $k => $v) {
-            $STR .= str_replace('${repeats}', $v, $XMLTXT);
+        $tmpStr = "";
+        foreach ($variablesArray as $variable) {
+            $tmpStr .= str_replace('${repeats}', $variable, $xmlTxt);
         }
         $this->assertEquals(
             1,
-            substr_count($templateProcessor->tempDocumentMainPart, $STR),
+            substr_count($this->peek($templateProcessor, 'tempDocumentMainPart'), $tmpStr),
             "order of replacement should be: ONE,TWO,THREE then FOUR"
         );
 
         # Now we try again, but without variable incrementals (old behavior)
-        $templateProcessor->tempDocumentMainPart = $XMLSTR;
-        $templateProcessor->cloneBlock('MYBLOCK', 4, true, false);
+        $this->poke($templateProcessor, 'tempDocumentMainPart', $xmlStr);
+        $templateProcessor->cloneBlock('MYBLOCK', 4, false);
 
         # detects new variable
         $this->assertEquals(
@@ -394,14 +467,14 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
         # we cloned block CLONEME 4 times, so let's count
         $this->assertEquals(
             4,
-            substr_count($templateProcessor->tempDocumentMainPart, $XMLTXT),
+            substr_count($this->peek($templateProcessor, 'tempDocumentMainPart'), $xmlTxt),
             'detects new variable $repeats to be present 4 times'
         );
 
         # we cloned block CLONEME 4 times, so let's see that there is no space between these blocks
         $this->assertEquals(
             1,
-            substr_count($templateProcessor->tempDocumentMainPart, $XMLTXT.$XMLTXT.$XMLTXT.$XMLTXT),
+            substr_count($this->peek($templateProcessor, 'tempDocumentMainPart'), $xmlTxt.$xmlTxt.$xmlTxt.$xmlTxt),
             "The four times cloned block should be the same as four times the block"
         );
     }
@@ -411,19 +484,21 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
      * @covers ::getVariables
      * @covers ::getBlock
      * @covers ::setValue
+     * @covers ::findTagLeft
+     * @covers ::findTagRight
      * @test
      */
     public function testClosedBlock()
     {
-        $templateProcessor = $this->getOpenTemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
-        $XMLTXT = '<w:p>This ${BLOCKCLOSE/} is here.</w:p>';
-        $XMLSTR = '<?xml><w:p>${BEFORE}</w:p>' . $XMLTXT . '<w:p>${AFTER}</w:p>';
-        $templateProcessor->tempDocumentMainPart = $XMLSTR;
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
+        $xmlTxt = '<w:p>This ${BLOCKCLOSE/} is here.</w:p>';
+        $xmlStr = '<?xml><w:p>${BEFORE}</w:p>' . $xmlTxt . '<w:p>${AFTER}</w:p>';
+        $this->poke($templateProcessor, 'tempDocumentMainPart', $xmlStr);
 
         $this->assertEquals(
-            $XMLTXT,
+            $xmlTxt,
             $templateProcessor->getBlock('BLOCKCLOSE/'),
-            "Block should be cut at the right place (using findBlockStart/findBlockEnd)"
+            "Block should be cut at the right place (using findTagLeft/findTagRight)"
         );
 
         # detects variables
@@ -434,40 +509,54 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
         );
 
         # inserting itself should result in no change
-        $oldvalue = $templateProcessor->tempDocumentMainPart;
+        $oldvalue = $this->peek($templateProcessor, 'tempDocumentMainPart');
         $block = $templateProcessor->getBlock('BLOCKCLOSE/');
         $templateProcessor->replaceBlock('BLOCKCLOSE/', $block);
         $this->assertEquals(
             $oldvalue,
-            $templateProcessor->tempDocumentMainPart,
+            $this->peek($templateProcessor, 'tempDocumentMainPart'),
             "ReplaceBlock should replace at the right position"
         );
 
         $templateProcessor->cloneBlock('BLOCKCLOSE/', 4);
         # detects new variables
         $this->assertEquals(
-            array('BEFORE', 'BLOCKCLOSE/#1', 'BLOCKCLOSE/#2', 'BLOCKCLOSE/#3', 'BLOCKCLOSE/#4', 'AFTER'),
+            array('BEFORE', 'BLOCKCLOSE#1/', 'BLOCKCLOSE#2/', 'BLOCKCLOSE#3/', 'BLOCKCLOSE#4/', 'AFTER'),
             $templateProcessor->getVariables(),
             "Injected document should contain the right cloned variables, in the right order"
         );
 
-        $templateProcessor->tempDocumentMainPart = $XMLSTR;
+        $this->poke($templateProcessor, 'tempDocumentMainPart', $xmlStr);
         $templateProcessor->deleteBlock('BLOCKCLOSE/');
         $this->assertEquals(
             '<?xml><w:p>${BEFORE}</w:p><w:p>${AFTER}</w:p>',
-            $templateProcessor->tempDocumentMainPart,
+            $this->peek($templateProcessor, 'tempDocumentMainPart'),
             'closedblock should delete properly'
+        );
+    }
+
+
+    /**
+     * @covers ::setValue
+     * @test
+     */
+    public function testSetValue()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/clone-merge.docx');
+        Settings::setOutputEscapingEnabled(true);
+        $helloworld = "hello\nworld";
+        $templateProcessor->setValue('userName', $helloworld);
+        $this->assertEquals(
+            array('tableHeader', 'userId', 'userLocation'),
+            $templateProcessor->getVariables()
         );
     }
 
     /**
      * @covers ::setValue
-     * @covers ::cloneRow
      * @covers ::saveAs
      * @covers ::findTagLeft
      * @covers ::findTagRight
-     * @covers ::findBlockEnd
-     * @covers ::findBlockStart
      * @test
      */
     public function testSetValueMultiline()
@@ -487,21 +576,410 @@ final class TemplateProcessorTest extends \PHPUnit_Framework_TestCase
         $this->assertTrue($docFound);
         if ($docFound) {
             # We open that new document (and use the OpenTemplateProcessor to access private variables)
-            $templateProcessorNEWFILE = $this->getOpenTemplateProcessor($docName);
+            $templateProcessorNewFile = new TemplateProcessor($docName);
             # We test that all Block variables have been replaced (thus, getVariables() is empty)
             $this->assertEquals(
                 0,
-                substr_count($templateProcessorNEWFILE->tempDocumentMainPart, $helloworld),
+                substr_count($this->peek($templateProcessorNewFile, 'tempDocumentMainPart'), $helloworld),
                 "there should be a multiline"
             );
             # The block it should be turned into:
             $xmlblock = '<w:t>hello</w:t><w:br/><w:t>world</w:t>';
             $this->assertEquals(
                 1,
-                substr_count($templateProcessorNEWFILE->tempDocumentMainPart, $xmlblock),
+                substr_count($this->peek($templateProcessorNewFile, 'tempDocumentMainPart'), $xmlblock),
                 "multiline should be present 1 in the document"
             );
             unlink($docName); # delete generated file
         }
+    }
+
+    /**
+     * @covers ::replaceBlock
+     * @covers ::getBlock
+     * @covers ::findTagLeft
+     * @covers ::findTagRight
+     * @test
+     */
+    public function testInlineBlock()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
+        $xmlStr = '<?xml><w:p><w:pPr><w:pStyle w:val="Normal"/><w:spacing w:after="160" w:before="0"/>'.
+            '<w:rPr/></w:pPr><w:r><w:rPr><w:lang w:val="en-US"/></w:rPr><w:t>This</w:t></w:r>'.
+            '<w:r><w:rPr><w:lang w:val="en-US"/></w:rPr><w:t>${inline}</w:t></w:r><w:r><w:rPr><w:b/>'.
+            '<w:bCs/><w:lang w:val="en-US"/></w:rPr><w:t xml:space="preserve"> has been'.
+            '${/inline}</w:t></w:r><w:r><w:rPr><w:lang w:val="en-US"/></w:rPr>'.
+            '<w:t xml:space="preserve"> block</w:t></w:r></w:p>';
+
+        $this->poke($templateProcessor, 'tempDocumentMainPart', $xmlStr);
+
+        $this->assertEquals(
+            $templateProcessor->getBlock('inline'),
+            '</w:t></w:r><w:r><w:rPr><w:b/>'.
+            '<w:bCs/><w:lang w:val="en-US"/></w:rPr><w:t xml:space="preserve"> has been',
+            "When inside the same <w:p>, cut inside the paragraph"
+        );
+
+        $templateProcessor->replaceBlock('inline', 'shows');
+
+        $this->assertEquals(
+            $this->peek($templateProcessor, 'tempDocumentMainPart'),
+            '<?xml><w:p><w:pPr><w:pStyle w:val="Normal"/><w:spacing w:after="160" w:before="0"/>'.
+            '<w:rPr/></w:pPr><w:r><w:rPr><w:lang w:val="en-US"/></w:rPr>'.
+            '<w:t>This</w:t></w:r><w:r><w:rPr><w:lang w:val="en-US"/></w:rPr><w:t>'.
+            'shows</w:t></w:r><w:r><w:rPr><w:lang w:val="en-US"/></w:rPr>'.
+            '<w:t xml:space="preserve"> block</w:t></w:r></w:p>',
+            "InlineBlock replace is malformed"
+        );
+    }
+
+    /**
+     * @covers ::replaceBlock
+     * @covers ::cloneBlock
+     * @covers ::setValue
+     * @test
+     */
+    public function testSetBlock()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
+        $xmlStr = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+        '<w:document><w:body><w:p></w:p>'.
+        '<w:p><w:pPr/><w:r><w:rPr/>'.
+        '<w:t xml:space="preserve">BEFORE</w:t>'.
+        '<w:t xml:space="preserve">${inline/}</w:t>'.
+        '<w:t xml:space="preserve">AFTER</w:t>'.
+        '</w:r></w:p>'.
+        '<w:p></w:p></w:body></w:document>';
+
+        $this->poke($templateProcessor, 'tempDocumentMainPart', $xmlStr);
+        $templateProcessor->setBlock('inline/', "one\ntwo");
+
+        // XMLReader::xml($templateProcessor->tempDocumentMainPart)->isValid()
+
+        $this->assertEquals(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+            '<w:document><w:body><w:p></w:p>'.
+            '<w:p><w:pPr/><w:r><w:rPr/>'.
+            '<w:t xml:space="preserve">BEFORE</w:t>'.
+            '<w:t xml:space="preserve">one</w:t>'.
+            '<w:t xml:space="preserve">AFTER</w:t>'.
+            '</w:r></w:p>'.
+            '<w:p><w:pPr/><w:r><w:rPr/>'.
+            '<w:t xml:space="preserve">BEFORE</w:t>'.
+            '<w:t xml:space="preserve">two</w:t>'.
+            '<w:t xml:space="preserve">AFTER</w:t>'.
+            '</w:r></w:p>'.
+            '<w:p></w:p></w:body></w:document>',
+            $this->peek($templateProcessor, 'tempDocumentMainPart')
+        );
+
+        $this->poke($templateProcessor, 'tempDocumentMainPart', $xmlStr);
+        $templateProcessor->setBlock('inline/', "simplé`");
+        $this->assertEquals(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'.
+            '<w:document><w:body><w:p></w:p>'.
+            '<w:p><w:pPr/><w:r><w:rPr/>'.
+            '<w:t xml:space="preserve">BEFORE</w:t>'.
+            '<w:t xml:space="preserve">simplé`</w:t>'.
+            '<w:t xml:space="preserve">AFTER</w:t>'.
+            '</w:r></w:p>'.
+            '<w:p></w:p></w:body></w:document>',
+            $this->peek($templateProcessor, 'tempDocumentMainPart')
+        );
+    }
+
+
+    /**
+     * @covers ::replaceBlock
+     * @covers ::cloneBlock
+     * @expectedException        \PhpOffice\PhpWord\Exception\Exception
+     * @expectedExceptionMessage Can not find end paragraph around block
+     * @test
+     */
+    public function testReplaceBlock()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
+        $xmlStr = '<?xml version="1.0" encoding="UTF-8" standalone="${nostart}"?>'.
+        '<w:document><w:body><w:p>${/nostart}</w:p>'.
+        '<w:p><w:pPr/><w:r><w:rPr/>'.
+        '<w:t xml:space="preserve">${malformedblock}</w:t>'.
+        '<w:t xml:space="preserve">${notABlock}</w:t>'.
+        '</w:r></w:p>'.
+        '<w:p></w:p>${/malformedblock}</w:body></w:document>';
+
+        $this->poke($templateProcessor, 'tempDocumentMainPart', $xmlStr);
+
+        $this->assertFalse(
+            $templateProcessor->replaceBlock('notABlock', "<w:p/>")
+        );
+        $this->assertFalse(
+            $templateProcessor->cloneBlock('notABlock', "<w:p/>", 10)
+        );
+        $this->assertNull(
+            $templateProcessor->cloneBlock('malformedblock', 11)
+        );
+        $this->assertNull(
+            $templateProcessor->cloneBlock('nostart', 11)
+        );
+        $this->assertEquals(
+            null,
+            $got = $templateProcessor->replaceBlock('malformedblock', "<w:p/>", true),
+            $got
+        );
+    }
+
+    /**
+     * @covers ::failGraciously
+     * @covers ::cloneSegment
+     * @covers ::replaceSegment
+     * @covers ::deleteSegment
+     * @test
+     */
+    public function testFailGraciously()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/clone-merge.docx');
+        $around = TemplateProcessor::SEARCH_AROUND;
+
+        $this->assertEquals(
+            null,
+            $templateProcessor->getSegment('I-DO-NOT-EXIST', 'w:p', $around, 'MainPart', false)
+        );
+
+        $this->assertEquals(
+            null,
+            $templateProcessor->cloneSegment('I-DO-NOT-EXIST', 'w:p', $around, 1, 'MainPart', true, false)
+        );
+
+        $this->assertEquals(
+            false,
+            $templateProcessor->cloneSegment('tableHeader', 'DESPACITO', $around, 1, 'MainPart', true, false)
+        );
+
+        $this->assertEquals(
+            null,
+            $templateProcessor->replaceSegment('I-DO-NOT-EXIST', 'w:p', $around, 'IOU', 'Footer:1', false)
+        );
+
+        $this->assertEquals(
+            false,
+            $templateProcessor->replaceSegment('tableHeader', 'we:be', $around, 'BodyMoving', 'MainPart', false)
+        );
+
+        $this->assertEquals(
+            false,
+            $templateProcessor->deleteSegment('tableHeader', '>sabotage<', 'MainPart', $around, 1, true, true, false)
+        );
+    }
+
+    /**
+     * @covers ::cloneSegment
+     * @covers ::getVariables
+     * @covers ::setBlock
+     * @covers ::saveAs
+     * @test
+     */
+    public function testCloneSegment()
+    {
+        $testDocument = __DIR__ . '/_files/templates/header-footer.docx';
+        $templateProcessor = new TemplateProcessor($testDocument);
+
+        $this->assertEquals(
+            array('documentContent', 'headerValue', 'footerValue'),
+            $templateProcessor->getVariables()
+        );
+
+        $zipFile = new \ZipArchive();
+        $zipFile->open($testDocument);
+        $originalFooterXml = $zipFile->getFromName('word/footer1.xml');
+        if (false === $zipFile->close()) {
+            throw new \Exception("Could not close zip file");
+        }
+
+        $around = TemplateProcessor::SEARCH_AROUND;
+        $segment = $templateProcessor->cloneSegment('${footerValue}', 'w:p', $around, 2, 'Footers:1');
+        $this->assertNotNull($segment);
+        $segment = $templateProcessor->cloneSegment('${headerValue}', 'w:p', $around, 2, 'Headers:1');
+        $this->assertNotNull($segment);
+        $segment = $templateProcessor->cloneSegment('${documentContent}', 'w:p', $around, 1, 'MainPart');
+        $this->assertNotNull($segment);
+        $templateProcessor->setBlock('headerValue#1', "In the end, it doesn't even matter.");
+
+        $docName = 'header-footer-test-result.docx';
+        $templateProcessor->saveAs($docName);
+        $docFound = file_exists($docName);
+        if ($docFound) {
+            $zipFile->open($docName);
+            $updatedFooterXml = $zipFile->getFromName('word/footer1.xml');
+            if (false === $zipFile->close()) {
+                throw new \Exception("Could not close zip file");
+            }
+
+            $this->assertNotEquals(
+                $originalFooterXml,
+                $updatedFooterXml
+            );
+
+            $templateProcessor2 = new TemplateProcessor($docName);
+            $this->assertEquals(
+                array('documentContent#1', 'headerValue#2', 'footerValue#1', 'footerValue#2'),
+                $templateProcessor2->getVariables()
+            );
+            unlink($docName);
+        }
+        $this->assertTrue($docFound);
+    }
+
+    /**
+     * @covers                   ::failGraciously
+     * @covers                   ::cloneSegment
+     * @expectedException        \PhpOffice\PhpWord\Exception\Exception
+     * @expectedExceptionMessage Can not find macro 'I-DO-NOT-EXIST', text not found or text contains markup
+     * @test
+     */
+    final public function testThrowFailGraciously()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/clone-merge.docx');
+        $this->assertEquals(
+            null,
+            $templateProcessor->cloneSegment(
+                'I-DO-NOT-EXIST',
+                'w:p',
+                TemplateProcessor::SEARCH_AROUND,
+                1,
+                'MainPart',
+                true,
+                true
+            )
+        );
+    }
+
+    /**
+     * @covers                   ::failGraciously
+     * @covers                   ::replaceSegment
+     * @expectedException        \PhpOffice\PhpWord\Exception\Exception
+     * @expectedExceptionMessage Can not find macro 'I-DO-NOT-EXIST', text not found or text contains markup
+     * @test
+     */
+    final public function testAnotherThrowFailGraciously()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/clone-merge.docx');
+        $around = TemplateProcessor::SEARCH_AROUND;
+        $this->assertEquals(
+            null,
+            $templateProcessor->replaceSegment('I-DO-NOT-EXIST', 'w:p', $around, 'IOU', 'MainPart', true)
+        );
+    }
+
+    /**
+     * @covers                   ::save
+     * @covers                   ::saveas
+     * @test1
+     */
+    public function testSaveAs()
+    {
+        $testDocument = __DIR__ . '/_files/templates/header-footer.docx';
+        $templateProcessor = new TemplateProcessor($testDocument);
+        $tempFileName = "tempfilename.docx";
+        $this->assertEquals(
+            null,
+            $templateProcessor->saveAs($tempFileName)
+        );
+        $this->assertTrue(
+            file_exists($tempFileName)
+        );
+        $templateProcessor = new TemplateProcessor($tempFileName);
+        $this->assertEquals(
+            null,
+            $templateProcessor->saveAs($tempFileName),
+            'Second save should succeed, but does not'
+        );
+        $this->assertTrue(
+            file_exists($tempFileName)
+        );
+        unlink($tempFileName);
+    }
+
+    /**
+     * @covers                   ::save
+     * @test
+     */
+    public function testSave()
+    {
+        $testDocument = __DIR__ . '/_files/templates/header-footer.docx';
+        $templateProcessor = new TemplateProcessor($testDocument);
+
+        $this->assertNotEquals(
+            $testDocument,
+            $tempFileName = $templateProcessor->save(),
+            'Do not clobber the original file'
+        );
+
+        $this->assertTrue(
+            file_exists($tempFileName)
+        );
+        unlink($tempFileName);
+    }
+
+    /**
+     * @covers                   ::replaceBlock
+     * @expectedException        \PhpOffice\PhpWord\Exception\Exception
+     * @expectedExceptionMessage Can not find block 'I-DO-NOT-EXIST', template variable not found or variable contains
+     * @test
+     */
+    final public function testReplaceBlockThrow()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/clone-merge.docx');
+        $this->assertEquals(
+            null,
+            $templateProcessor->replaceBlock('I-DO-NOT-EXIST', 'IOU', true)
+        );
+    }
+
+    /**
+     * @covers                   ::getSegment
+     * @expectedException        \PhpOffice\PhpWord\Exception\Exception
+     * @expectedExceptionMessage Can not find macro 'I-DO-NOT-EXIST', text not found or text contains markup.
+     * @test
+     */
+    final public function testgetSegmentThrow()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/clone-merge.docx');
+        $this->assertEquals(
+            null,
+            $templateProcessor->getSegment('I-DO-NOT-EXIST', 'w:p', TemplateProcessor::SEARCH_AROUND, 'MainPart', true)
+        );
+    }
+
+    /**
+     * @covers                   ::cloneBlock
+     * @expectedException        \PhpOffice\PhpWord\Exception\Exception
+     * @expectedExceptionMessage Can not find block
+     * @test
+     */
+    final public function testCloneBlockThrow()
+    {
+        $templateProcessor = new TemplateProcessor(__DIR__ . '/_files/templates/clone-merge.docx');
+        $this->assertEquals(
+            null,
+            $templateProcessor->cloneBlock('I-DO-NOT-EXIST', '<w:p>replace</w:p>', 1, true, true)
+        );
+    }
+
+    /**
+     * Example of testing protected functions
+     *
+     * @covers ::findTagRight
+     * @covers ::findTagLeft
+     * @test
+     */
+    public function testFindTagRightAndLeft()
+    {
+        $testDocument = __DIR__ . '/_files/templates/header-footer.docx';
+        $stub = $this->getMockForAbstractClass('\PhpOffice\PhpWord\TemplateProcessor', array($testDocument));
+
+        $str = '...abcd<w:p>${dream}</w:p>efg...';
+        $this->assertEquals(true, self::callProtectedMethod($stub, 'findTagRight', array(&$str, '</w:p>', 0)));
+        $this->assertEquals(26, self::callProtectedMethod($stub, 'findTagRight', array(&$str, '</w:p>', 0)));
+        $this->assertEquals(07, self::callProtectedMethod($stub, 'findTagLeft', array(&$str, '<w:p>', 20)));
     }
 }

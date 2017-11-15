@@ -10,8 +10,8 @@
  * file that was distributed with this source code. For the full list of
  * contributors, visit https://github.com/PHPOffice/PHPWord/contributors.
  *
- * @link        https://github.com/PHPOffice/PHPWord
- * @copyright   2010-2016 PHPWord contributors
+ * @see         https://github.com/PHPOffice/PHPWord
+ * @copyright   2010-2017 PHPWord contributors
  * @license     http://www.gnu.org/licenses/lgpl.txt LGPL version 3
  */
 
@@ -28,6 +28,18 @@ use Zend\Stdlib\StringUtils;
 class TemplateProcessor
 {
     const MAXIMUM_REPLACEMENTS_DEFAULT = -1;
+
+    const SEARCH_LEFT = -1;
+    const SEARCH_RIGHT = 1;
+    const SEARCH_AROUND = 0;
+
+    /**
+     * Enable/disable setValue('key') becoming setValue('${key}') automatically.
+     * Call it like: TemplateProcessor::$ensureMacroCompletion = false;
+     *
+     * @var boolean
+     */
+    public static $ensureMacroCompletion = true;
 
     /**
      * ZipArchive object.
@@ -138,11 +150,11 @@ class TemplateProcessor
             foreach ($xml as &$item) {
                 $item = $this->transformSingleXml($item, $xsltProcessor);
             }
+            return (array)$xml;
         } else {
             $xml = $this->transformSingleXml($xml, $xsltProcessor);
+            return (string)$xml;
         }
-
-        return $xml;
     }
 
     /**
@@ -168,20 +180,21 @@ class TemplateProcessor
             throw new Exception('Could not set values for the given XSL style sheet parameters.');
         }
 
-        $this->tempDocumentHeaders = $this->transformXml($this->tempDocumentHeaders, $xsltProcessor);
-        $this->tempDocumentMainPart = $this->transformXml($this->tempDocumentMainPart, $xsltProcessor);
-        $this->tempDocumentFooters = $this->transformXml($this->tempDocumentFooters, $xsltProcessor);
+        $this->tempDocumentHeaders = (array)$this->transformXml($this->tempDocumentHeaders, $xsltProcessor);
+        $this->tempDocumentMainPart = (string)$this->transformXml($this->tempDocumentMainPart, $xsltProcessor);
+        $this->tempDocumentFooters = (array)$this->transformXml($this->tempDocumentFooters, $xsltProcessor);
     }
 
     /**
-     * @param string $macro
+     * @param string  $macro If written as VALUE it will return ${VALUE} if static::$ensureMacroCompletion
+     * @param boolean $closing False by default, if set to true, will add  ${/  }  around the macro
      *
      * @return string
      */
-    protected static function ensureMacroCompleted($macro)
+    protected static function ensureMacroCompleted($macro, $closing = false)
     {
-        if (substr($macro, 0, 2) !== '${' && substr($macro, -1) !== '}') {
-            $macro = '${' . $macro . '}';
+        if (static::$ensureMacroCompletion && substr($macro, 0, 2) !== '${' && substr($macro, -1) !== '}') {
+            $macro = '${' . ($closing ? '/' : '') . $macro . '}';
         }
 
         return $macro;
@@ -202,9 +215,9 @@ class TemplateProcessor
     }
 
     /**
-     * @param mixed $search
-     * @param mixed $replace
-     * @param integer $limit
+     * @param mixed $search macro name you want to replace (or an array of these)
+     * @param mixed $replace replace string (or an array of these)
+     * @param integer $limit How many times it will have to replace the same variable all over the document.
      *
      * @return void
      */
@@ -212,18 +225,20 @@ class TemplateProcessor
     {
         if (is_array($search)) {
             foreach ($search as &$item) {
-                $item = self::ensureMacroCompleted($item);
+                $item = static::ensureMacroCompleted($item);
             }
+            unset($item);
         } else {
-            $search = self::ensureMacroCompleted($search);
+            $search = static::ensureMacroCompleted($search);
         }
 
         if (is_array($replace)) {
             foreach ($replace as &$item) {
-                $item = self::ensureUtf8Encoded($item);
+                $item = static::ensureUtf8Encoded($item);
             }
+            unset($item);
         } else {
-            $replace = self::ensureUtf8Encoded($replace);
+            $replace = static::ensureUtf8Encoded($replace);
         }
 
         if (Settings::isOutputEscapingEnabled()) {
@@ -231,22 +246,82 @@ class TemplateProcessor
             $replace = $xmlEscaper->escape($replace);
         }
 
-        $this->tempDocumentHeaders = $this->setValueForPart($search, $replace, $this->tempDocumentHeaders, $limit);
-        $this->tempDocumentMainPart = $this->setValueForPart($search, $replace, $this->tempDocumentMainPart, $limit);
-        $this->tempDocumentFooters = $this->setValueForPart($search, $replace, $this->tempDocumentFooters, $limit);
+        $this->tempDocumentHeaders = (array)$this->setValueForPart(
+            $search,
+            $replace,
+            (array)$this->tempDocumentHeaders,
+            $limit
+        );
+        $this->tempDocumentMainPart = (string)$this->setValueForPart(
+            $search,
+            $replace,
+            (string)$this->tempDocumentMainPart,
+            $limit
+        );
+        $this->tempDocumentFooters = (array)$this->setValueForPart(
+            $search,
+            $replace,
+            (array)$this->tempDocumentFooters,
+            $limit
+        );
+    }
+
+    /**
+     * Replaces a closed block with text
+     *
+     * @param string  $blockname The blockname without '${}'. Your macro must end with slash, i.e.: ${value/}
+     * @param mixed   $replace Array or the text can be multiline (contain \n). It will cloneBlock().
+     * @param integer $limit
+     *
+     * @return void
+     */
+    public function setBlock($blockname, $replace, $limit = self::MAXIMUM_REPLACEMENTS_DEFAULT)
+    {
+        if (is_string($replace) && preg_match('~\R~u', $replace)) {
+            $replace = preg_split('~\R~u', $replace);
+        }
+        if (is_array($replace)) {
+            $this->processBlock($blockname, count($replace), true, false);
+            foreach ($replace as $oneVal) {
+                $this->setValue($blockname, $oneVal, 1);
+            }
+        } else {
+            $this->setValue($blockname, $replace, $limit);
+        }
     }
 
     /**
      * Updates a file inside the document, from a string (with binary data)
+     * To replace an image: $templateProcessor->zipAddFromString("word/media/image1.jpg", file_get_contents($file));
      *
-     * @param string $localname
-     * @param string $contents
+     * @param string $localname The path and name inside the docx/zip file
+     * @param mixed $contents Text or Binary data
      *
      * @return bool
      */
     public function zipAddFromString($localname, $contents)
     {
         return $this->zipClass->AddFromString($localname, $contents);
+    }
+
+    /**
+     * If $throwException is true, it throws an exception, else it returns $elseReturn
+     *
+     * @param string $exceptionText
+     * @param bool   $throwException
+     * @param mixed $elseReturn
+     *
+     * @return mixed
+     *
+     * @throws \PhpOffice\PhpWord\Exception\Exception
+     */
+    private function failGraciously($exceptionText, $throwException, $elseReturn)
+    {
+        if ($throwException) {
+            throw new Exception($exceptionText);
+        } else {
+            return $elseReturn;
+        }
     }
 
     /**
@@ -270,257 +345,281 @@ class TemplateProcessor
     }
 
     /**
+     * Clone a string and enumerate ( i.e. ${macro#1} )
+     *
+     * @param string  $text Must be a variable as we use references for speed
+     * @param integer $numberOfClones How many times $text needs to be duplicated
+     * @param bool    $incrementVariables If true, the macro's inside the string get numerated
+     *
+     * @return string
+     */
+    protected static function cloneSlice(&$text, $numberOfClones = 1, $incrementVariables = true)
+    {
+        $result = '';
+        for ($i = 1; $i <= $numberOfClones; $i++) {
+            if ($incrementVariables) {
+                $result .= preg_replace('/\$\{(.*?)(\/?)\}/', '\${\\1#' . $i . '\\2}', $text);
+            } else {
+                $result .= $text;
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * Process a table row in a template document.
+     *
+     * @param string  $search
+     * @param integer $numberOfClones
+     * @param mixed   $replace (true to clone, or a string to replace)
+     * @param bool    $incrementVariables
+     * @param bool    $throwException
+     *
+     * @return string|false Returns the row cloned or false if the $search macro is not found
+     *
+     * @throws \PhpOffice\PhpWord\Exception\Exception
+     */
+    private function processRow(
+        $search,
+        $numberOfClones = 1,
+        $replace = true,
+        $incrementVariables = true,
+        $throwException = false
+    ) {
+        return $this->processSegment(
+            static::ensureMacroCompleted($search),
+            'w:tr',
+            0,
+            $numberOfClones,
+            'MainPart',
+            function (&$xmlSegment, &$segmentStart, &$segmentEnd, &$part) use (&$replace) {
+                if (strpos($xmlSegment, '<w:vMerge w:val="restart"')) {
+                    $extraRowEnd = $segmentEnd;
+                    while (true) {
+                        $extraRowStart = $extraRowEnd + 1;
+                        $extraRowEnd = strpos($part, '</w:tr>', $extraRowStart);
+
+                        if (!$extraRowEnd) {
+                            break;
+                        }
+                        $extraRowEnd += strlen('</w:tr>');
+                        // If tmpXmlRow doesn't contain continue, this row is no longer part of the spanned row.
+                        $tmpXmlRow = substr($part, $extraRowStart, ($extraRowEnd - $extraRowStart));
+                        if (!preg_match('#<w:vMerge ?/>#', $tmpXmlRow)
+                            && !preg_match('#<w:vMerge w:val="continue" ?/>#', $tmpXmlRow)
+                        ) {
+                            break;
+                        }
+                        // This row was a spanned row, update $segmentEnd and search for the next row.
+                        $segmentEnd = $extraRowEnd;
+                    }
+                    $xmlSegment = substr($part, $segmentStart, ($segmentEnd - $segmentStart));
+                }
+                return $replace;
+            },
+            $incrementVariables,
+            $throwException
+        );
+    }
+
+    /**
      * Clone a table row in a template document.
      *
-     * @param string $search
+     * @param string  $search
      * @param integer $numberOfClones
-     * @param bool $replace
-     * @param bool $incrementVariables
-     * @param bool $throwexception
+     * @param bool    $incrementVariables
+     * @param bool    $throwException
      *
-     * @return string|null
+     * @return mixed Returns true if row cloned succesfully or or false if the $search macro is not found
      *
      * @throws \PhpOffice\PhpWord\Exception\Exception
      */
     public function cloneRow(
         $search,
         $numberOfClones = 1,
-        $replace = true,
         $incrementVariables = true,
-        $throwexception = false
+        $throwException = false
     ) {
-        if ('${' !== substr($search, 0, 2) && '}' !== substr($search, -1)) {
-            $search = '${' . $search . '}';
-        }
-
-        $tagPos = strpos($this->tempDocumentMainPart, $search);
-        if (!$tagPos) {
-            if ($throwexception) {
-                throw new Exception(
-                    "Can not clone row, template variable not found or variable contains markup."
-                );
-            } else {
-                return null;
-            }
-        }
-
-        $rowStart = $this->findRowStart($tagPos, $throwexception);
-        $rowEnd = $this->findRowEnd($tagPos);
-        $xmlRow = $this->getSlice($rowStart, $rowEnd);
-
-        // Check if there's a cell spanning multiple rows.
-        if (preg_match('#<w:vMerge w:val="restart"/>#', $xmlRow)) {
-            // $extraRowStart = $rowEnd;
-            $extraRowEnd = $rowEnd;
-            while (true) {
-                $extraRowStart = $this->findRowStart($extraRowEnd + 1, $throwexception);
-                $extraRowEnd = $this->findRowEnd($extraRowEnd + 1);
-
-                if (!$extraRowEnd) {
-                    break;
-                }
-
-                // If tmpXmlRow doesn't contain continue, this row is no longer part of the spanned row.
-                $tmpXmlRow = $this->getSlice($extraRowStart, $extraRowEnd);
-                if (!preg_match('#<w:vMerge/>#', $tmpXmlRow) &&
-                    !preg_match('#<w:vMerge w:val="continue" />#', $tmpXmlRow)) {
-                    break;
-                }
-                // This row was a spanned row, update $rowEnd and search for the next row.
-                $rowEnd = $extraRowEnd;
-            }
-            $xmlRow = $this->getSlice($rowStart, $rowEnd);
-        }
-
-        if ($replace) {
-            $result = $this->getSlice(0, $rowStart);
-            for ($i = 1; $i <= $numberOfClones; $i++) {
-                if ($incrementVariables) {
-                    $result .= preg_replace('/\$\{(.*?)\}/', '\${\\1#' . $i . '}', $xmlRow);
-                } else {
-                    $result .= $xmlRow;
-                }
-            }
-            $result .= $this->getSlice($rowEnd);
-
-            $this->tempDocumentMainPart = $result;
-        }
-
-        return $xmlRow;
+        return $this->processRow($search, $numberOfClones, true, $incrementVariables, $throwException);
     }
 
     /**
-     * Clone a block.
+     * Get a row. (first block found)
      *
-     * @param string $blockname
-     * @param integer $clones
-     * @param boolean $replace
-     * @param boolean $incrementVariables
-     * @param boolean $throwexception
+     * @param string  $search
+     * @param boolean $throwException
      *
      * @return string|null
      */
-    public function cloneBlock(
+    public function getRow($search, $throwException = false)
+    {
+        return $this->processRow($search, 0, false, false, $throwException);
+    }
+
+    /**
+     * Replace a row.
+     *
+     * @param string  $search a macro name in a table row
+     * @param string  $replacement The replacement <w:tr> xml string. Be careful and keep the xml uncorrupted.
+     * @param boolean $throwException false by default (it then returns false or null on errors).
+     *
+     * @return mixed true (replaced), false ($search not found) or null (no tags found around $search)
+     */
+    public function replaceRow($search, $replacement = '', $throwException = false)
+    {
+        return $this->processRow($search, 1, (string)$replacement, false, $throwException);
+    }
+
+    /**
+     * Delete a row containing the given variable
+     *
+     * @param string $search
+     *
+     * @return boolean
+     */
+    public function deleteRow($search)
+    {
+        return $this->processRow($search, 0, '', false, false);
+    }
+
+    /**
+     * process a block.
+     *
+     * @param string  $blockname The blockname without '${}'
+     * @param integer $clones
+     * @param mixed $replace
+     * @param boolean $incrementVariables
+     * @param boolean $throwException
+     *
+     * @return mixed The cloned string if successful, false ($blockname not found) or Null (no paragraph found)
+     *
+     * @throws \PhpOffice\PhpWord\Exception\Exception
+     */
+    private function processBlock(
         $blockname,
         $clones = 1,
         $replace = true,
         $incrementVariables = true,
-        $throwexception = false
+        $throwException = false
     ) {
-        $singleton = substr($blockname, -1) == '/';
-        $startSearch = '${'  . $blockname . '}';
-        $endSearch =   '${/' . $blockname . '}';
+        $startSearch = static::ensureMacroCompleted($blockname);
+        $endSearch = static::ensureMacroCompleted($blockname, true);
+
+        if (substr($blockname, -1) == '/') { // singleton/closed block
+            return $this->processSegment(
+                $startSearch,
+                'w:p',
+                0,
+                $clones,
+                'MainPart',
+                $replace,
+                $incrementVariables,
+                $throwException
+            );
+        }
 
         $startTagPos = strpos($this->tempDocumentMainPart, $startSearch);
-        $endTagPos = $singleton? $startTagPos : strpos($this->tempDocumentMainPart, $endSearch, $startTagPos);
+        $endTagPos = strpos($this->tempDocumentMainPart, $endSearch, $startTagPos);
 
         if (!$startTagPos || !$endTagPos) {
-            if ($throwexception) {
-                throw new Exception(
-                    "Can not find block '$blockname', template variable not found or variable contains markup."
-                );
-            } else {
-                return null; // Block not found, return null
-            }
+            return $this->failGraciously(
+                "Can not find block '$blockname', template variable not found or variable contains markup.",
+                $throwException,
+                false
+            );
         }
 
-        $startBlockStart = $this->findBlockStart($startTagPos, $throwexception);
-        $startBlockEnd = $this->findBlockEnd($startTagPos);
-        // $xmlStart = $this->getSlice($startBlockStart, $startBlockEnd);
+        $startBlockStart = $this->findTagLeft($this->tempDocumentMainPart, '<w:p>', $startTagPos, $throwException);
+        $startBlockEnd = $this->findTagRight($this->tempDocumentMainPart, '</w:p>', $startTagPos);
 
         if (!$startBlockStart || !$startBlockEnd) {
-            if ($throwexception) {
-                throw new Exception(
-                    "Can not find start paragraph around block '$blockname'"
-                );
-            } else {
-                return false;
-            }
+            return $this->failGraciously(
+                "Can not find start paragraph around block '$blockname'",
+                $throwException,
+                null
+            );
         }
 
-        $endBlockStart = 0;
-        $endBlockEnd = 0;
-        $xmlBlock = null;
-        if (substr($blockname, -1) == '/') {
-            $endBlockStart = $startBlockStart;
-            $endBlockEnd = $startBlockEnd;
-            $xmlBlock = $this->getSlice($startBlockStart, $endBlockEnd);
-        } else {
-            $endBlockStart = $this->findBlockStart($endTagPos, $throwexception);
-            $endBlockEnd = $this->findBlockEnd($endTagPos);
-            // $xmlEnd = $this->getSlice($endBlockStart, $endBlockEnd);
+        $endBlockStart = $this->findTagLeft($this->tempDocumentMainPart, '<w:p>', $endTagPos, $throwException);
+        $endBlockEnd = $this->findTagRight($this->tempDocumentMainPart, '</w:p>', $endTagPos);
 
-            if (!$endBlockStart || !$endBlockEnd) {
-                if ($throwexception) {
-                    throw new Exception(
-                        "Can not find end paragraph around block '$blockname'"
-                    );
-                } else {
-                    return false;
-                }
-            }
-
-            $xmlBlock = $this->getSlice($startBlockEnd, $endBlockStart);
+        if (!$endBlockStart || !$endBlockEnd) {
+            return $this->failGraciously(
+                "Can not find end paragraph around block '$blockname'",
+                $throwException,
+                null
+            );
         }
 
-        if ($replace) {
-            $result = $this->getSlice(0, $startBlockStart);
-            for ($i = 1; $i <= $clones; $i++) {
-                if ($incrementVariables) {
-                    $result .= preg_replace('/\$\{(.*?)\}/', '\${\\1#' . $i . '}', $xmlBlock);
-                } else {
-                    $result .= $xmlBlock;
-                }
-            }
-            $result .= $this->getSlice($endBlockEnd);
+        if ($startBlockEnd == $endBlockEnd) { // inline block
+            $startBlockStart = $startTagPos;
+            $startBlockEnd = $startTagPos + strlen($startSearch);
+            $endBlockStart = $endTagPos;
+            $endBlockEnd = $endTagPos + strlen($endSearch);
+        }
 
-            $this->tempDocumentMainPart = $result;
+        $xmlBlock = $this->getSlice($this->tempDocumentMainPart, $startBlockEnd, $endBlockStart);
+
+        if ($replace !== false) {
+            if ($replace === true) {
+                $replace = static::cloneSlice($xmlBlock, $clones, $incrementVariables);
+            }
+            $this->tempDocumentMainPart =
+                $this->getSlice($this->tempDocumentMainPart, 0, $startBlockStart)
+                . $replace
+                . $this->getSlice($this->tempDocumentMainPart, $endBlockEnd);
+            return true;
         }
 
         return $xmlBlock;
     }
 
     /**
-     * Get a block. (first block found)
+     * Clone a block.
      *
-     * @param string $blockname
-     * @param boolean $throwexception
+     * @param string  $blockname The blockname without '${}', it will search for '${BLOCKNAME}' and '${/BLOCKNAME}
+     * @param integer $clones How many times the block needs to be cloned
+     * @param boolean $incrementVariables true by default (variables get appended #1, #2 inside the cloned blocks)
+     * @param boolean $throwException false by default (it then returns false or null on errors).
      *
-     * @return string|null
+     * @return mixed True if successful, false ($blockname not found) or null (no paragraph found)
+     *
+     * @throws \PhpOffice\PhpWord\Exception\Exception
      */
-    public function getBlock($blockname, $throwexception = false)
-    {
-        return $this->cloneBlock($blockname, 1, false, false, $throwexception);
+    public function cloneBlock(
+        $blockname,
+        $clones = 1,
+        $incrementVariables = true,
+        $throwException = false
+    ) {
+        return $this->processBlock($blockname, $clones, true, $incrementVariables, $throwException);
     }
 
     /**
-     * Get a row. (first block found)
+     * Get a block. (first block found)
      *
-     * @param string $rowname
-     * @param boolean $throwexception
+     * @param string  $blockname The blockname without '${}'
+     * @param boolean $throwException false by default
      *
-     * @return string|null
+     * @return mixed a string when $blockname is found, false ($blockname not found) or null (no paragraph found)
      */
-    public function getRow($rowname, $throwexception = false)
+    public function getBlock($blockname, $throwException = false)
     {
-        return $this->cloneRow($rowname, 1, false, false, $throwexception);
+        return $this->processBlock($blockname, 0, false, false, $throwException);
     }
 
     /**
      * Replace a block.
      *
-     * @param string $blockname
-     * @param string $replacement
-     * @param boolean $throwexception
+     * @param string  $blockname The name of the macro start and end (without the macro marker ${})
+     * @param string  $replacement The replacement xml
+     * @param boolean $throwException false by default.
      *
-     * @return false on no replacement, true on replacement
+     * @return mixed false-ish on no replacement, true-ish on replacement
      */
-    public function replaceBlock($blockname, $replacement, $throwexception = false)
+    public function replaceBlock($blockname, $replacement = '', $throwException = false)
     {
-        $singleton = substr($blockname, -1) == '/';
-        $startSearch = '${'  . $blockname . '}';
-        $endSearch   = '${/' . $blockname . '}';
-
-        $startTagPos = strpos($this->tempDocumentMainPart, $startSearch);
-        $endTagPos = $singleton? $startTagPos : strpos($this->tempDocumentMainPart, $endSearch, $startTagPos);
-
-        if (!$startTagPos || !$endTagPos) {
-            if ($throwexception) {
-                throw new Exception(
-                    "Can not find block '$blockname', template variable not found or variable contains markup."
-                );
-            } else {
-                return false;
-            }
-        }
-
-        $startBlockStart = $this->findBlockStart($startTagPos, $throwexception);
-        $startBlockEnd = $this->findBlockEnd($startTagPos);
-
-        $endBlockEnd = 0;
-        if (substr($blockname, -1) == '/') {
-            $endBlockEnd = $startBlockEnd;
-        } else {
-            $endBlockEnd = $this->findBlockEnd($endTagPos);
-
-            if (!$endBlockEnd) {
-                if ($throwexception) {
-                    throw new Exception(
-                        "Can not find end paragraph around block '$blockname'"
-                    );
-                } else {
-                    return false;
-                }
-            }
-        }
-
-        $result  = $this->getSlice(0, $startBlockStart);
-        $result .= $replacement;
-        $result .= $this->getSlice($endBlockEnd);
-
-        $this->tempDocumentMainPart = $result;
-
-        return true;
+        return $this->processBlock($blockname, 0, (string)$replacement, false, $throwException);
     }
 
     /**
@@ -528,7 +627,7 @@ class TemplateProcessor
      *
      * @param string $blockname
      *
-     * @return true on block found and deleted, false on block not found.
+     * @return mixed true-ish on block found and deleted, falseish on block not found.
      */
     public function deleteBlock($blockname)
     {
@@ -536,11 +635,179 @@ class TemplateProcessor
     }
 
     /**
+     * process a segment.
+     *
+     * @param string  $needle  If this is a macro, you need to add the ${} around it yourself.
+     * @param string  $xmltag  an xml tag without brackets, for example:  w:p
+     * @param integer $direction  in which direction should be searched. -1 left, 1 right. Default 0: around
+     * @param integer $clones  How many times the segment needs to be cloned
+     * @param string  $docPart 'MainPart' (default) 'Footers:1' (first footer) or 'Headers:1' (first header)
+     * @param mixed $replace true (default/cloneSegment) false(getSegment) string(replaceSegment) function(callback)
+     * @param boolean $incrementVariables true by default (variables get appended #1, #2 inside the cloned blocks)
+     * @param boolean $throwException false by default (it then returns false or null on errors).
+     *
+     * @return mixed The segment(getSegment), false (no $needle), null (no tags), true (clone/replace)
+     */
+    public function processSegment(
+        $needle,
+        $xmltag,
+        $direction = self::SEARCH_AROUND,
+        $clones = 1,
+        $docPart = 'MainPart',
+        $replace = true,
+        $incrementVariables = true,
+        $throwException = false
+    ) {
+        $docPart = preg_split('/:/', $docPart);
+        if (count($docPart)>1) {
+            $part = &$this->{"tempDocument".$docPart[0]}[$docPart[1]];
+        } else {
+            $part = &$this->{"tempDocument".$docPart[0]};
+        }
+        $needlePos = strpos($part, $needle);
+
+        if ($needlePos === false) {
+            return $this->failGraciously(
+                "Can not find macro '$needle', text not found or text contains markup.",
+                $throwException,
+                false
+            );
+        }
+
+        $directionStart = $direction == self::SEARCH_RIGHT ? 'findTagRight' : 'findTagLeft';
+        $directionEnd = $direction == self::SEARCH_LEFT ? 'findTagLeft' : 'findTagRight';
+        $segmentStart = $this->{$directionStart}($part, "<$xmltag>", $needlePos, $throwException);
+        $segmentEnd = $this->{$directionEnd}($part, "</$xmltag>", $needlePos);
+
+        if (!$segmentStart || !$segmentEnd) {
+            return $this->failGraciously(
+                "Can not find <$xmltag> ($segmentStart,$segmentEnd) around segment '$needle'",
+                $throwException,
+                null
+            );
+        }
+
+        $xmlSegment = $this->getSlice($part, $segmentStart, $segmentEnd);
+
+        while (is_callable($replace)) {
+            $replace = $replace($xmlSegment, $segmentStart, $segmentEnd, $part);
+        }
+        if ($replace !== false) {
+            if ($replace === true) {
+                $replace = static::cloneSlice($xmlSegment, $clones, $incrementVariables);
+            }
+            $part =
+                $this->getSlice($part, 0, $segmentStart)
+                . $replace
+                . $this->getSlice($part, $segmentEnd);
+            return true;
+        }
+
+        return $xmlSegment;
+    }
+
+    /**
+     * Clone a segment.
+     *
+     * @param string  $needle  If this is a macro, you need to add the ${} around it yourself.
+     * @param string  $xmltag  an xml tag without brackets, for example:  w:p
+     * @param integer $direction in which direction should be searched. -1 left, 1 right. Default 0: around
+     * @param integer $clones  How many times the segment needs to be cloned
+     * @param string  $docPart 'MainPart' (default) 'Footers:1' (first footer) or 'Headers:1' (first header)
+     * @param boolean $incrementVariables true by default (variables get appended #1, #2 inside the cloned blocks)
+     * @param boolean $throwException false by default (it then returns false or null on errors).
+     *
+     * @return mixed Returns true when succesfully cloned, false (no $needle found), null (no tags found)
+     */
+    public function cloneSegment(
+        $needle,
+        $xmltag,
+        $direction = self::SEARCH_AROUND,
+        $clones = 1,
+        $docPart = 'MainPart',
+        $incrementVariables = true,
+        $throwException = false
+    ) {
+        return $this->processSegment(
+            $needle,
+            $xmltag,
+            $direction,
+            $clones,
+            $docPart,
+            true,
+            $incrementVariables,
+            $throwException
+        );
+    }
+
+    /**
+     * Get a segment. (first segment found)
+     *
+     * @param string  $needle If this is a macro, you need to add the ${} around it yourself.
+     * @param string  $xmltag an xml tag without brackets, for example:  w:p
+     * @param integer $direction in which direction should be searched. -1 left, 1 right. Default 0: around
+     * @param string  $docPart 'MainPart' (default) 'Footers:1' (first footer) or 'Headers:1' (first header)
+     * @param boolean $throwException false by default (it then returns false or null on errors).
+     *
+     * @return mixed Segment String, false ($needle not found) or null (no tags found around $needle)
+     */
+    public function getSegment($needle, $xmltag, $direction = 0, $docPart = 'MainPart', $throwException = false)
+    {
+        return $this->processSegment($needle, $xmltag, $direction, 0, $docPart, false, false, $throwException);
+    }
+
+    /**
+     * Replace a segment.
+     *
+     * @param string  $needle If this is a macro, you need to add the ${} around it yourself.
+     * @param string  $xmltag an xml tag without brackets, for example:  w:p
+     * @param integer $direction in which direction should be searched. -1 left, 1 right. Default 0: around
+     * @param string  $replacement The replacement xml string. Be careful and keep the xml uncorrupted.
+     * @param string  $docPart 'MainPart' (default) 'Footers:1' (first footer) or 'Headers:2' (second header)
+     * @param boolean $throwException false by default (it then returns false or null on errors).
+     *
+     * @return mixed true (replaced), false ($needle not found) or null (no tags found around $needle)
+     */
+    public function replaceSegment(
+        $needle,
+        $xmltag,
+        $direction = self::SEARCH_AROUND,
+        $replacement = '',
+        $docPart = 'MainPart',
+        $throwException = false
+    ) {
+        return $this->processSegment(
+            $needle,
+            $xmltag,
+            $direction,
+            0,
+            $docPart,
+            (string)$replacement,
+            false,
+            $throwException
+        );
+    }
+
+    /**
+     * Delete a segment.
+     *
+     * @param string $needle If this is a macro, you need to add the ${} yourself.
+     * @param string $xmltag an xml tag without brackets, for example:  w:p
+     * @param string $docPart 'MainPart' (default) 'Footers:1' (first footer) or 'Headers:1' (second header)
+     *
+     * @return mixed true (segment deleted), false ($needle not found) or null (no tags found around $needle)
+     */
+    public function deleteSegment($needle, $xmltag, $docPart = 'MainPart')
+    {
+        return $this->replaceSegment($needle, $xmltag, '', $docPart, false);
+    }
+
+     /**
      * Saves the result document.
      *
-     * @return string
-     *
      * @throws \PhpOffice\PhpWord\Exception\Exception
+     *
+     * @return string The filename of the document
      */
     public function save()
     {
@@ -561,6 +828,7 @@ class TemplateProcessor
 
         return $this->tempDocumentFilename;
     }
+
 
     /**
      * Saves the result document to the user defined file.
@@ -592,6 +860,7 @@ class TemplateProcessor
     /**
      * Finds parts of broken macros and sticks them together.
      * Macros, while being edited, could be implicitly broken by some of the word processors.
+     * In order to limit side-effects, we limit matches to only inside (inner) paragraphs
      *
      * @param string $documentPart The document part in XML representation.
      *
@@ -599,28 +868,33 @@ class TemplateProcessor
      */
     protected function fixBrokenMacros($documentPart)
     {
-        $fixedDocumentPart = $documentPart;
-
-        $fixedDocumentPart = preg_replace_callback(
-            '|\$[^{]*\{[^}]*\}|U',
-            function ($match) {
-                return strip_tags($match[0]);
-            },
-            $fixedDocumentPart
+        $paragraphs = preg_split(
+            '@(</?w:p\b[^>]*>)@',
+            $documentPart,
+            -1,
+            PREG_SPLIT_NO_EMPTY | PREG_SPLIT_DELIM_CAPTURE
         );
-
-        return $fixedDocumentPart;
+        foreach ($paragraphs as &$paragraph) {
+            $paragraph = preg_replace_callback(
+                '|\$(?:<[^\${}]+>)?\{[^{}]*\}|U',
+                function ($match) {
+                    return strip_tags($match[0]);
+                },
+                $paragraph
+            );
+        }
+        return implode('', $paragraphs);
     }
 
     /**
      * Find and replace macros in the given XML section.
      *
-     * @param mixed $search
-     * @param mixed $replace
-     * @param string $documentPartXML
+     * @param mixed   $search
+     * @param mixed   $replace
+     * @param mixed  $documentPartXML Array or string (Header/Footer)
      * @param integer $limit
      *
-     * @return string
+     * @return mixed
      */
     protected function setValueForPart($search, $replace, $documentPartXML, $limit)
     {
@@ -629,6 +903,7 @@ class TemplateProcessor
             foreach ($replace as &$item) {
                 $item = preg_replace('~\R~u', '</w:t><w:br/><w:t>', $item);
             }
+            unset($item);
         } else {
             $replace = preg_replace('~\R~u', '</w:t><w:br/><w:t>', $replace);
         }
@@ -649,9 +924,9 @@ class TemplateProcessor
      *
      * @return string[]
      */
-    protected function getVariablesForPart($documentPartXML)
+    protected static function getVariablesForPart($documentPartXML)
     {
-        preg_match_all('/\$\{(.*?)}/i', $documentPartXML, $matches);
+        preg_match_all('/\$\{([^<>{}]*?)}/i', $documentPartXML, $matches);
 
         return $matches[1];
     }
@@ -691,81 +966,56 @@ class TemplateProcessor
     /**
      * Find the start position of the nearest tag before $offset.
      *
-     * @param string $tag
-     * @param integer $offset
-     * @param boolean $throwexception
+     * @param string  $searchString The string we are searching in (the mainbody or an array element of Footers/Headers)
+     * @param string  $tag  Fully qualified tag, for example: '<w:p>' (with brackets!)
+     * @param integer $offset Do not look from the beginning, but starting at $offset
+     * @param boolean $throwException
      *
-     * @return integer
+     * @return integer Zero if not found (due to the nature of xml, your document never starts at 0)
      *
      * @throws \PhpOffice\PhpWord\Exception\Exception
      */
-    protected function findTagLeft($tag, $offset = 0, $throwexception = false)
+
+    protected function findTagLeft(&$searchString, $tag, $offset = 0, $throwException = false)
     {
         $tagStart = strrpos(
-            $this->tempDocumentMainPart,
+            $searchString,
             substr($tag, 0, -1) . ' ',
-            ((strlen($this->tempDocumentMainPart) - $offset) * -1)
+            ((strlen($searchString) - $offset) * -1)
         );
 
         if (!$tagStart) {
             $tagStart = strrpos(
-                $this->tempDocumentMainPart,
+                $searchString,
                 $tag,
-                ((strlen($this->tempDocumentMainPart) - $offset) * -1)
+                ((strlen($searchString) - $offset) * -1)
             );
         }
+
         if (!$tagStart) {
-            if ($throwexception) {
-                throw new Exception('Can not find the start position of the item to clone.');
-            } else {
-                return 0;
-            }
+            return $this->failGraciously(
+                "Can not find the start position of the item to clone.",
+                $throwException,
+                0
+            );
         }
 
         return $tagStart;
     }
 
     /**
-     * Find the start position of the nearest table row before $offset.
+     * Find the end position of the nearest $tag after $offset.
      *
-     * @param integer $offset
-     * @param boolean $throwexception
+     * @param string  $searchString The string we are searching in (the MainPart or an array element of Footers/Headers)
+     * @param string  $tag  Fully qualified tag, for example: '<w:p>'
+     * @param integer $offset Do not look from the beginning, but starting at $offset
      *
-     * @return integer
-     *
-     * @throws \PhpOffice\PhpWord\Exception\Exception
+     * @return integer Zero if not found
      */
-    protected function findRowStart($offset, $throwexception)
+    protected function findTagRight(&$searchString, $tag, $offset = 0)
     {
-        return $this->findTagLeft('<w:tr>', $offset, $throwexception);
-    }
-
-    /**
-     * Find the start position of the nearest paragraph before $offset.
-     *
-     * @param integer $offset
-     * @param boolean $throwexception
-     *
-     * @return integer
-     *
-     * @throws \PhpOffice\PhpWord\Exception\Exception
-     */
-    protected function findBlockStart($offset, $throwexception)
-    {
-        return $this->findTagLeft('<w:p>', $offset, $throwexception);
-    }
-
-    /**
-     * Find the end position of the nearest tag after $offset.
-     *
-     * @param integer $offset
-     *
-     * @return integer
-     */
-    protected function findTagRight($tag, $offset = 0)
-    {
-        $pos = strpos($this->tempDocumentMainPart, $tag, $offset);
-        if ($pos) {
+        $pos = strpos($searchString, $tag, $offset);
+        if ($pos !== false) {
             return $pos + strlen($tag);
         } else {
             return 0;
@@ -773,43 +1023,20 @@ class TemplateProcessor
     }
 
     /**
-     * Find the end position of the nearest table row after $offset.
-     *
-     * @param integer $offset
-     *
-     * @return integer
-     */
-    protected function findRowEnd($offset)
-    {
-        return $this->findTagRight('</w:tr>', $offset);
-    }
-
-    /**
-     * Find the end position of the nearest paragraph after $offset.
-     *
-     * @param integer $offset
-     *
-     * @return integer
-     */
-    protected function findBlockEnd($offset)
-    {
-        return $this->findTagRight('</w:p>', $offset);
-    }
-
-    /**
      * Get a slice of a string.
      *
+     * @param string  $searchString The string we are searching in (the MainPart or an array element of Footers/Headers)
      * @param integer $startPosition
      * @param integer $endPosition
      *
      * @return string
      */
-    protected function getSlice($startPosition, $endPosition = 0)
+    protected function getSlice(&$searchString, $startPosition, $endPosition = 0)
     {
         if (!$endPosition) {
-            $endPosition = strlen($this->tempDocumentMainPart);
+            $endPosition = strlen($searchString);
         }
 
-        return substr($this->tempDocumentMainPart, $startPosition, ($endPosition - $startPosition));
+        return substr($searchString, $startPosition, ($endPosition - $startPosition));
     }
 }

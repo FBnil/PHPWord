@@ -135,12 +135,12 @@ Text breaks are empty new lines. To add text breaks, use the following syntax. A
 Page breaks
 ~~~~~~~~~~~
 
-There are two ways to insert a page breaks, using the ``addPageBreak``
+There are two ways to insert a page break, using the ``addPageBreak``
 method or using the ``pageBreakBefore`` style of paragraph.
 
-:: code-block:: php
+.. code-block:: php
 
-    \\$section->addPageBreak();
+    $section->addPageBreak();
 
 Lists
 -----
@@ -432,7 +432,7 @@ Comments
 ---------
 
 Comments can be added to a document by using ``addComment``.
-The comment can contain formatted text. Once the comment has been added, it can be linked to any to any element.
+The comment can contain formatted text. Once the comment has been added, it can be linked to any element with ``setCommentStart``.
 
 .. code-block:: php
 
