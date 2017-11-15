@@ -75,12 +75,12 @@ final class CheckboxTemplateProcessorTest extends \PHPUnit_Framework_TestCase
     }
 
     /**
-     * @covers ::setCheck
-     * @covers ::setCheckOn
-     * @covers ::setCheckOff
+     * @covers ::setCheckbox
+     * @covers ::setCheckboxOn
+     * @covers ::setCheckboxOff
      * @test
      */
-    public function testsetCheck()
+    public function testsetCheckbox()
     {
         $template = new CheckboxTemplateProcessor(__DIR__ . '/_files/templates/blank.docx');
         $xmlStr = '<?xml><w:p><w:pPr><w:pStyle w:val="Normal"/><w:rPr></w:rPr></w:pPr>'.
@@ -98,8 +98,10 @@ final class CheckboxTemplateProcessorTest extends \PHPUnit_Framework_TestCase
 
         $this->poke($template, 'tempDocumentMainPart', $xmlStr);
 
-        $template->setCheckOn('bookmark_1');
+        $template->setCheckboxOn('bookmark_1');
 
+        $this->assertTrue($template->getCheckbox('bookmark_1'));
+		
         $this->assertNotEquals(
             $this->peek($template, 'tempDocumentMainPart'),
             $xmlStr
@@ -109,7 +111,9 @@ final class CheckboxTemplateProcessorTest extends \PHPUnit_Framework_TestCase
             strstr($this->peek($template, 'tempDocumentMainPart'), '<w14:checked w:val="1"')
         );
 
-        $template->setCheckOff('bookmark_1');
+        $template->setCheckboxOff('bookmark_1');
+
+        $this->assertFalse($template->getCheckbox('bookmark_1'));
 
         $this->assertEquals(
             $this->peek($template, 'tempDocumentMainPart'),
@@ -120,7 +124,9 @@ final class CheckboxTemplateProcessorTest extends \PHPUnit_Framework_TestCase
             strstr($this->peek($template, 'tempDocumentMainPart'), '<w14:checked w:val="0"')
         );
 
-        $template->setCheckOn('line1');
+        $template->setCheckboxOn('line1');
+
+        $this->assertTrue($template->getCheckbox('bookmark_1'));
 
         $this->assertNotEquals(
             $this->peek($template, 'tempDocumentMainPart'),
@@ -131,7 +137,9 @@ final class CheckboxTemplateProcessorTest extends \PHPUnit_Framework_TestCase
             strstr($this->peek($template, 'tempDocumentMainPart'), '<w14:checked w:val="1"')
         );
 
-        $template->setCheckOff('line1');
+        $template->setCheckboxOff('line1');
+
+        $this->assertFalse($template->getCheckbox('bookmark_1'));
 
         $this->assertEquals(
             $this->peek($template, 'tempDocumentMainPart'),

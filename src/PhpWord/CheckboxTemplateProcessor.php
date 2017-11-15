@@ -112,7 +112,7 @@ class CheckboxTemplateProcessor extends \PhpOffice\PhpWord\TemplateProcessor
      *
      * @return bool true if set (or the value was already correct), false if an error occurred
      */
-    public function setCheck($macro, $enable)
+    public function setCheckbox($macro, $enable)
     {
         $xmldata = $this->processSegment(
             static::ensureMacroCompleted($macro),
@@ -139,9 +139,9 @@ class CheckboxTemplateProcessor extends \PhpOffice\PhpWord\TemplateProcessor
      *
      * @return bool true if set (or the value was already correct), false if an error occurred
      */
-    public function setCheckOn($macro)
+    public function setCheckboxOn($macro)
     {
-        return $this->setCheck($macro, true);
+        return $this->setCheckbox($macro, true);
     }
 
     /**
@@ -151,8 +151,36 @@ class CheckboxTemplateProcessor extends \PhpOffice\PhpWord\TemplateProcessor
      *
      * @return bool true if unset (or the value was already correct), false if an error occurred
      */
-    public function setCheckOff($macro)
+    public function setCheckboxOff($macro)
     {
-        return $this->setCheck($macro, false);
+        return $this->setCheckbox($macro, false);
+    }
+
+    /**
+     * get the state of the checkbox immediately to the left of a macroname (text or bookmark)
+     *
+     * @param string $macro The macro to search for
+     *
+     * @return mixed true if set, false if not set and null if an error occurred
+     */
+    public function getCheckbox($macro)
+    {
+        $xmldata = $this->processSegment(
+            static::ensureMacroCompleted($macro),
+            'w:sdt',
+            self::SEARCH_LEFT,
+            0,
+            'MainPart',
+            function (&$xmlSegment, &$segmentStart, &$segmentEnd, &$part) {
+                $xmlSegment = $this->getCheckedValue($xmlSegment);
+                return false; // only return the value in $xmlSegment
+            }
+        );
+
+        if ($xmldata === null) {
+            return null; // FATAL: variable not found OR checkbox not found
+        } else {
+            return (bool)$xmldata; // result
+        }
     }
 }
