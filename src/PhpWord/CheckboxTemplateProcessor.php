@@ -29,7 +29,13 @@ class CheckboxTemplateProcessor extends \PhpOffice\PhpWord\TemplateProcessor
      */
     protected static function getCheckedValue($xmlStr)
     {
-        return preg_match('~<w14:checked w:val="([^"]*)" ?/>~u', $xmlStr, $matches)? $matches[1] : "";
+        if (preg_match('~<w14:checked w:val="([^"]*)" ?/>~u', $xmlStr, $matches)){
+			return $matches[1]; // LibreOffice
+		} elseif (preg_match('~<w:default w:val="[^"]+"(\s?)/>~u', $xmlStr, $matches)){
+			return $matches[1]; // MSWord
+		} else {
+			return "";
+		}
     }
 
     /**
@@ -95,8 +101,16 @@ class CheckboxTemplateProcessor extends \PhpOffice\PhpWord\TemplateProcessor
 
         $count = 0;
         $xmlSegment = preg_replace(
-            [ '~<w14:checked w:val="[^"]+"(\s?)/>~u', '~<w:t\b([^>]*)>([^<]*)</w:t>~u' ],
-            [ '<w14:checked w:val="'.$newValue.'"\1/>', '<w:t\1>'.$checkboxChar.'</w:t>' ],
+            [ 
+				'~<w14:checked w:val="[^"]+"(\s?)/>~u', // LibreOffice
+				'~<w:t\b([^>]*)>([^<]*)</w:t>~u',  // LibreOffice
+				'~<w:default w:val="[^"]+"(\s?)/>~u' // MSWord
+			],
+            [ 
+				'<w14:checked w:val="'.$newValue.'"\1/>', // LibreOffice
+				'<w:t\1>'.$checkboxChar.'</w:t>', // LibreOffice
+				'<w:default w:val="'.$newValue.'"\1/>' // MSWord
+			],
             $xmlSegment,
             1,
             $count
